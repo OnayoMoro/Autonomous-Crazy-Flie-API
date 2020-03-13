@@ -33,6 +33,7 @@ connects the connected/disconnected callbacks.
 """
 
 import logging
+import time
 
 from PyQt5 import uic
 from PyQt5.QtCore import pyqtSignal
@@ -41,6 +42,11 @@ from PyQt5.QtWidgets import QMessageBox
 import cfclient
 from cfclient.ui.tab import Tab
 
+try:
+    import zmq
+except ImportError as e:
+    raise Exception("ZMQ library probably not installed ({})".format(e))
+
 __author__ = 'Bitcraze AB and Onayo Moro'
 __all__ = ['ViconMovementTab']
 
@@ -48,7 +54,6 @@ logger = logging.getLogger(__name__)
 
 viconmovement_tab_class = uic.loadUiType(cfclient.module_path +
                                    "/ui/tabs/viconMovementTab.ui")[0]
-
 
 class ViconMovementTab(Tab, viconmovement_tab_class):
     """Tab for plotting logging data"""
@@ -76,6 +81,9 @@ class ViconMovementTab(Tab, viconmovement_tab_class):
         self._log_data_signal.connect(self._log_data_received)
         self._param_updated_signal.connect(self._param_updated)
 
+        # UI Buttons Initialise
+        self.send_command.clicked.connect(self.ZMQ_Command)
+
         # Connect the Crazyflie API callbacks to the signals
         self._helper.cf.connected.add_callback(
             self._connected_signal.emit)
@@ -88,18 +96,36 @@ class ViconMovementTab(Tab, viconmovement_tab_class):
 
         logger.debug("Crazyflie connected to {}".format(link_uri))
 
-        temp_config = LogConfig("Tempreature", 200)
-        temp_config.add_variable("Temp.C")
-        self._helper.cf.add_config(temp_config)
-        if temp_config.valid:
-            temp_config.data_recieved_cb.add_callback(self._log_data_signal.emit)
-            temp_config.start()
+        self.Send_Command.setEnabled(True)
+        self.console_window.insertPlainText("Connected\n")
+
+        #temp_config = LogConfig("Tempreature", 200)
+        #temp_config.add_variable("Temp.C")
+        #self._helper.cf.add_config(temp_config)
+        #if temp_config.valid:
+        #    temp_config.data_recieved_cb.add_callback(self._log_data_signal.emit)
+        #    temp_config.start()
 
 
     def _disconnected(self, link_uri):
         """Callback for when the Crazyflie has been disconnected"""
 
         logger.debug("Crazyflie disconnected from {}".format(link_uri))
+
+        self.send_command.setEnabled(False)
+        self.console_window.insertPlainText("Disconnected\n")
+
+        # Reset display status values
+        self.thrust_val.setText("0")
+        self.pitch_val.setText("0")
+        self.roll_val.setText("0")
+        self.yaw_val.setText("0")
+
+        self.temp_val.setText("0")
+
+        self.X_p.setText("0")
+        self.Y_p.setText("0")
+        self.Z_p.setText("0")
 
     def _param_updated(self, name, value):
         """Callback when the registered parameter get's updated"""
@@ -120,3 +146,48 @@ class ViconMovementTab(Tab, viconmovement_tab_class):
         QMessageBox.about(self, "Error",
                           "Error when using log config"
                           " [{0}]: {1}".format(log_conf.name, msg))
+
+    def ZMQ_Command(self):
+        self.progressBar.setValue(0)
+        context = zmq.Context()
+        sender = context.socket(zmq.PUSH)
+        bind_addr = "tcp://127.0.0.1:{}".format(1024 + 188)
+        sender.connect(bind_addr)
+        Thrust = int(self.thrust_cmd.toPlainText())
+        Roll = int(self.roll_cmd.toPlainText())
+        Pitch = int(self.pitch_cmd.toPlainText())
+        Yaw = int(self.yaw_cmd.toPlainText())
+
+        cmdmess = {
+            "version": 1,
+            "ctrl": {
+                "roll": 0.0,
+                "pitch": 0.0,
+                "yaw": 0.0,
+                "thrust": 0.0
+            }
+        }
+        self.progressBar.setValue(25)
+
+        # Unlocking thrust protection
+        cmdmess["ctrl"]["thrust"] = 0
+        sender.send_json(cmdmess)
+
+        for i in range(10):
+            cmdmess["ctrl"]["thrust"] = Thrust
+            sender.send_json(cmdmess)
+            time.sleep(0.5)
+
+        self.progressBar.setValue(50)
+
+        for i in range(10):
+            Thrust -= Thrust*0.1
+            cmdmess["ctrl"]["thrust"] = Thrust
+            sender.send_json(cmdmess)
+            time.sleep(0.5)
+
+        cmdmess["ctrl"]["thrust"] = 0
+        sender.send_json(cmdmess)
+        self.progressBar.setValue(100)
+
+
